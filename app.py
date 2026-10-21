@@ -201,6 +201,15 @@ def send_products_email():
     expected_key = os.getenv('API_KEY')
     received_key = request.headers.get('x-api-key', '')
 
+    app.logger.warning(
+    "AUTH DEBUG: configurada=%s, longitud_esperada=%s, "
+    "longitud_recibida=%s, coincide=%s",
+    bool(expected_key),
+    len(expected_key or ''),
+    len(received_key or ''),
+    hmac.compare_digest(received_key, expected_key or '')
+)
+
     if not expected_key:
         return jsonify({
             'success': False,
