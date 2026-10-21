@@ -217,10 +217,16 @@ def send_products_email():
         }), 500
 
     if not hmac.compare_digest(received_key, expected_key):
-        return jsonify({
-            'success': False,
-            'mensaje': 'No autorizado'
-        }), 401
+    return jsonify({
+        'success': False,
+        'mensaje': 'No autorizado',
+        'debug': {
+            'api_key_configurada': bool(expected_key),
+            'longitud_esperada': len(expected_key or ''),
+            'longitud_recibida': len(received_key or ''),
+            'version_diagnostico': 'v2'
+        }
+    }), 401
 
     # 2. Validar destinatario
     data = request.get_json(silent=True)
