@@ -1,6 +1,10 @@
 import os
 from decimal import Decimal, InvalidOperation
 
+import hmac
+import html
+import re
+import resend
 import psycopg
 from psycopg.rows import dict_row
 from flask import Flask, jsonify, request
@@ -188,6 +192,160 @@ def update_version():
         return jsonify({'mensaje': 'Producto actualizado con versionamiento', 'producto': product_dict(row)})
     except Exception as exc:
         return error_response(exc)
+
+
+@app.post('/api/send-products-email')
+def send_products_email():
+
+    # 1. Autenticación mediante API Key
+    expected_key = os.getenv('API_KEY')
+    received_key = request.headers.get('x-api-key', '')
+
+    if not expected_key:
+        return jsonify({
+            'success': False,
+            'mensaje': 'API Key no configurada'
+        }), 500
+
+    if not hmac.compare_digest(received_key, expected_key):
+        return jsonify({
+            'success': False,
+            'mensaje': 'No autorizado'
+        }), 401
+
+    # 2. Validar destinatario
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({
+            'success': False,
+            'mensaje': 'Debes enviar un objeto JSON'
+        }), 400
+
+    email = data.get('email', '')
+
+    if (
+        not isinstance(email, str)
+        or len(email) > 254
+        or not re.fullmatch(
+            r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}',
+            email
+        )
+    ):
+        return jsonify({
+            'success': False,
+            'mensaje': 'Correo electrónico inválido'
+        }), 400
+
+    # 3. Consultar productos directamente desde Supabase
+    try:
+        with Database.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    '''
+                    SELECT id, names, price, stock, version
+                    FROM public.products_vw
+                    ORDER BY id
+                    '''
+                )
+                products = cur.fetchall()
+
+    except Exception:
+        app.logger.exception('Error consultando productos')
+        return jsonify({
+            'success': False,
+            'mensaje': 'No se pudieron consultar los productos'
+        }), 500
+
+    if not products:
+        return jsonify({
+            'success': False,
+            'mensaje': 'No existen productos disponibles'
+        }), 404
+
+    # 4. Preparar el catálogo en HTML
+    rows = ''
+
+    for product in products:
+        name = html.escape(str(product['names']))
+        price = float(product['price'])
+        stock = html.escape(str(product['stock']))
+
+        rows += f'''
+        <tr>
+            <td style="padding:10px;border:1px solid #ddd;">
+                {name}
+            </td>
+            <td style="padding:10px;border:1px solid #ddd;">
+                ${price:.2f}
+            </td>
+            <td style="padding:10px;border:1px solid #ddd;">
+                {stock}
+            </td>
+        </tr>
+        '''
+
+    email_html = f'''
+    <div style="font-family:Arial,sans-serif;max-width:650px;margin:auto;">
+        <h1>Catálogo de Productos</h1>
+        <p>Estos son nuestros productos disponibles:</p>
+
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="background:#f1f1f1;">
+                    <th style="padding:10px;border:1px solid #ddd;">
+                        Producto
+                    </th>
+                    <th style="padding:10px;border:1px solid #ddd;">
+                        Precio
+                    </th>
+                    <th style="padding:10px;border:1px solid #ddd;">
+                        Stock
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows}
+            </tbody>
+        </table>
+
+        <p>Gracias por consultar nuestro catálogo.</p>
+    </div>
+    '''
+
+    # 5. Enviar correo utilizando Resend
+    resend_key = os.getenv('RESEND_API_KEY')
+    sender = os.getenv('MAIL_RESEND')
+
+    if not resend_key or not sender:
+        return jsonify({
+            'success': False,
+            'mensaje': 'Servicio de correo no configurado'
+        }), 500
+
+    try:
+        resend.api_key = resend_key
+
+        result = resend.Emails.send({
+            'from': sender,
+            'to': [email],
+            'subject': 'Catálogo de Productos',
+            'html': email_html
+        })
+
+        return jsonify({
+            'success': True,
+            'mensaje': 'Correo aceptado para envío',
+            'resultado': str(result)
+        }), 200
+
+    except Exception:
+        app.logger.exception('Error enviando correo')
+        return jsonify({
+            'success': False,
+            'mensaje': 'No se pudo enviar el correo'
+        }), 502
+
 
 
 if __name__ == '__main__':
